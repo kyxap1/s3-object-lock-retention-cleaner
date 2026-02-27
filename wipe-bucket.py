@@ -63,13 +63,15 @@ def mark_error(message):
 def export_versions():
     with open(CSV_FILE, 'w', newline='') as f:
         writer = csv.writer(f)
-        writer.writerow(['Key', 'VersionId'])
+        writer.writerow(['Key', 'VersionId', 'IsDeleteMarker'])
         paginator = s3.get_paginator('list_object_versions')
         for page in paginator.paginate(Bucket=BUCKET):
-            for v in page.get('Versions', []) + page.get('DeleteMarkers', []):
-                writer.writerow([v['Key'], v['VersionId']])
+            for v in page.get('Versions', []):
+                writer.writerow([v['Key'], v['VersionId'], 'False'])
+            for v in page.get('DeleteMarkers', []):
+                writer.writerow([v['Key'], v['VersionId'], 'True'])
 
-def process_object(key, version_id):
+def process_object(key, version_id, is_delete_marker=False):
     global total_processed, unlocked_count, deleted_count
     ident = f"{key}@{version_id}"
 
@@ -83,7 +85,7 @@ def process_object(key, version_id):
                 deleted_count += 1
         return
 
-    if object_lock_enabled:
+    if object_lock_enabled and not is_delete_marker:
         try:
             s3.put_object_legal_hold(
                 Bucket=BUCKET,
@@ -164,7 +166,14 @@ def main():
             total = len(rows)
 
             with ThreadPoolExecutor(max_workers=50) as executor:
-                futures = [executor.submit(process_object, row['Key'], row['VersionId']) for row in rows]
+                futures = [
+                    executor.submit(
+                        process_object, 
+                        row['Key'], 
+                        row['VersionId'], 
+                        row.get('IsDeleteMarker', 'False') == 'True'
+                    ) for row in rows
+                ]
 
                 if not VERBOSE:
                     import time
